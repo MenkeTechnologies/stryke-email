@@ -138,12 +138,13 @@ around them.
 
 ## \[0x05\] API reference
 
-| Group   | Functions                                                                 |
-| ------- | ------------------------------------------------------------------------- |
-| Send    | `send`, `send_raw`, `send_bulk`, `verify_connection`                       |
-| Templates | `render`, `merge`                                                       |
-| Lists   | `validate`, `parse`, `unsubscribe_header`, `suppress_filter`               |
-| Meta    | `version`                                                                  |
+| Group     | Functions                                                                       |
+| --------- | ------------------------------------------------------------------------------- |
+| Send      | `send`, `send_raw`, `send_bulk`, `verify_connection`                             |
+| Templates | `render`, `merge`, `merge_many`                                                  |
+| Addresses | `validate`, `validate_list`, `parse`, `split_addresses`, `format_address`, `domain` |
+| Lists     | `unsubscribe_header`, `suppress_filter`, `mailto`                                |
+| Meta      | `version`                                                                        |
 
 The template, address, and compliance helpers take no connection and are
 unit-tested in-crate, so they validate in CI with no SMTP server.

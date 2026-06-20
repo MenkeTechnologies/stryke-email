@@ -1,6 +1,6 @@
 [package]
 name = "stryke-email"
-version = "0.1.0"
+version = "0.2.0"
 description = "Email / campaign client for stryke. cdylib loaded in-process — SMTP send, mass mailing with templates + suppression + List-Unsubscribe + rate limiting, through your own authenticated SMTP."
 authors = ["MenkeTechnologies"]
 license = "MIT"
@@ -22,6 +22,12 @@ exports = [
     "email__parse_address",
     "email__unsubscribe_header",
     "email__suppress_filter",
+    "email__split_addresses",
+    "email__validate_list",
+    "email__address_domain",
+    "email__merge_many",
+    "email__format_address",
+    "email__mailto",
 ]
 
 [scripts]

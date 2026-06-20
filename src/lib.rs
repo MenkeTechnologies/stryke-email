@@ -268,6 +268,91 @@ fn unsubscribe_value(url: Option<&str>, mailto: Option<&str>) -> String {
     parts.join(", ")
 }
 
+/// Split a comma/semicolon-separated address-list into individual addresses,
+/// honoring commas inside quoted names and `<...>` angle brackets.
+fn split_address_list(s: &str) -> Vec<(Option<String>, String)> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    let mut in_angle = false;
+    for ch in s.chars() {
+        match ch {
+            '"' => {
+                in_quote = !in_quote;
+                cur.push(ch);
+            }
+            '<' => {
+                in_angle = true;
+                cur.push(ch);
+            }
+            '>' => {
+                in_angle = false;
+                cur.push(ch);
+            }
+            ',' | ';' if !in_quote && !in_angle => {
+                if !cur.trim().is_empty() {
+                    parts.push(split_address(cur.trim()));
+                }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        parts.push(split_address(cur.trim()));
+    }
+    parts
+}
+
+/// Format `(name, email)` into an RFC 5322 address header value, quoting the
+/// display-name when it contains special characters. The inverse of
+/// `split_address`.
+fn format_address(name: Option<&str>, email: &str) -> String {
+    match name {
+        Some(n) if !n.is_empty() => {
+            let needs_quote = n.bytes().any(|b| {
+                matches!(
+                    b,
+                    b'(' | b')'
+                        | b'<'
+                        | b'>'
+                        | b'@'
+                        | b','
+                        | b';'
+                        | b':'
+                        | b'\\'
+                        | b'"'
+                        | b'.'
+                        | b'['
+                        | b']'
+                )
+            });
+            if needs_quote {
+                let escaped = n.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{escaped}\" <{email}>")
+            } else {
+                format!("{n} <{email}>")
+            }
+        }
+        _ => email.to_string(),
+    }
+}
+
+/// Percent-encode a string for a URL query component (RFC 3986 unreserved set
+/// passes through; everything else is `%XX`).
+fn pct_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 // ── message building ────────────────────────────────────────────────────────
 
 fn mailboxes(v: &Value, key: &str) -> Result<Vec<Mailbox>> {
@@ -641,6 +726,118 @@ pub extern "C" fn email__suppress_filter(args: *const c_char) -> *const c_char {
     })
 }
 
+/// Parse an address-list string into `[{ name, email }]`.
+#[no_mangle]
+pub extern "C" fn email__split_addresses(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let list = v
+            .get("list")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing list"))?;
+        let out: Vec<Value> = split_address_list(list)
+            .into_iter()
+            .map(|(name, email)| json!({ "name": name, "email": email }))
+            .collect();
+        Ok(json!({ "addresses": out }))
+    })
+}
+
+/// Validate a batch of addresses → `{ valid: [...], invalid: [...] }`.
+#[no_mangle]
+pub extern "C" fn email__validate_list(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let addrs = v
+            .get("addresses")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| anyhow!("missing addresses array"))?;
+        let (mut valid, mut invalid) = (Vec::new(), Vec::new());
+        for a in addrs {
+            let Some(s) = a.as_str() else { continue };
+            if is_valid_address(s) {
+                valid.push(json!(s));
+            } else {
+                invalid.push(json!(s));
+            }
+        }
+        Ok(json!({ "valid": valid, "invalid": invalid }))
+    })
+}
+
+/// Domain part of a single address (after parsing off any display name).
+#[no_mangle]
+pub extern "C" fn email__address_domain(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let addr = v
+            .get("address")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing address"))?;
+        let (_, email) = split_address(addr);
+        let domain = email.split_once('@').map(|(_, d)| d.to_string());
+        Ok(json!({ "domain": domain }))
+    })
+}
+
+/// Render one template string across an array of var dicts → `{ values: [...] }`.
+#[no_mangle]
+pub extern "C" fn email__merge_many(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let tmpl = v
+            .get("template")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing template string"))?;
+        let rows = v
+            .get("rows")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| anyhow!("missing rows array"))?;
+        let empty = Map::new();
+        let values: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                let vars = r.as_object().unwrap_or(&empty);
+                json!(render_template(tmpl, vars))
+            })
+            .collect();
+        Ok(json!({ "values": values }))
+    })
+}
+
+/// Format `{ name?, email }` into an RFC 5322 address header value.
+#[no_mangle]
+pub extern "C" fn email__format_address(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let email = v
+            .get("email")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing email"))?;
+        let name = v.get("name").and_then(|x| x.as_str());
+        Ok(json!({ "value": format_address(name, email) }))
+    })
+}
+
+/// Build a `mailto:` URL with optional `subject`, `body`, `cc`, `bcc` (all
+/// percent-encoded).
+#[no_mangle]
+pub extern "C" fn email__mailto(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let to = v
+            .get("to")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing to"))?;
+        let mut params = Vec::new();
+        for key in ["subject", "body", "cc", "bcc"] {
+            if let Some(val) = v.get(key).and_then(|x| x.as_str()) {
+                params.push(format!("{key}={}", pct_encode(val)));
+            }
+        }
+        let url = if params.is_empty() {
+            format!("mailto:{to}")
+        } else {
+            format!("mailto:{to}?{}", params.join("&"))
+        };
+        Ok(json!({ "url": url }))
+    })
+}
+
 // ── unit tests (pure logic) ─────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -728,6 +925,34 @@ mod tests {
             conn_key(&json!({"host": "h", "port": 2525})).unwrap().port,
             2525
         );
+    }
+
+    #[test]
+    fn split_list_honors_quotes_and_angles() {
+        let v = split_address_list(r#"Ada <a@x.com>, "Lovelace, Jr" <b@x.com>; c@x.com"#);
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0], (Some("Ada".to_string()), "a@x.com".to_string()));
+        assert_eq!(v[1], (Some("Lovelace, Jr".to_string()), "b@x.com".to_string()));
+        assert_eq!(v[2], (None, "c@x.com".to_string()));
+    }
+
+    #[test]
+    fn format_address_quotes_specials_roundtrips() {
+        assert_eq!(format_address(Some("Ada"), "a@x.com"), "Ada <a@x.com>");
+        assert_eq!(
+            format_address(Some("Lovelace, Jr"), "a@x.com"),
+            "\"Lovelace, Jr\" <a@x.com>"
+        );
+        assert_eq!(format_address(None, "a@x.com"), "a@x.com");
+        // round-trips through split_address for the simple case
+        assert_eq!(split_address(&format_address(Some("Ada"), "a@x.com")).1, "a@x.com");
+    }
+
+    #[test]
+    fn pct_encode_query_component() {
+        assert_eq!(pct_encode("hi there"), "hi%20there");
+        assert_eq!(pct_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(pct_encode("plain-_.~"), "plain-_.~");
     }
 
     #[test]

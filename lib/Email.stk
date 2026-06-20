@@ -139,3 +139,43 @@ fn Email::suppress_filter ($recipients, $suppression) {
     val $r = { recipients => $list, suppression => $supp }
     Email::_decode("suppress_filter", email__suppress_filter(to_json($r)))
 }
+
+## Parse a comma/semicolon-separated address list into `[ { name, email } ]`.
+## Commas inside quoted names and `<...>` are respected.
+fn Email::split_addresses ($list) {
+    Email::_decode("split_addresses", email__split_addresses(to_json({ list => $list })))->{addresses}
+}
+
+## Validate an arrayref of addresses. Returns `{ valid => [...], invalid => [...] }`.
+fn Email::validate_list ($addresses) {
+    val $list = ref($addresses) eq "ARRAY" ? $addresses : [$addresses]
+    Email::_decode("validate_list", email__validate_list(to_json({ addresses => $list })))
+}
+
+## Domain part of a single address (display name stripped first).
+fn Email::domain ($address) {
+    Email::_decode("address_domain", email__address_domain(to_json({ address => $address })))->{domain}
+}
+
+## Render a $template string across an arrayref of var dicts. Returns `[ str ]`.
+fn Email::merge_many ($template, $rows) {
+    val $list = ref($rows) eq "ARRAY" ? $rows : [$rows]
+    val $r = { template => $template, rows => $list }
+    Email::_decode("merge_many", email__merge_many(to_json($r)))->{values}
+}
+
+## Format `{ name?, email }` into an RFC 5322 address header value. Inverse of
+## `Email::parse`.
+fn Email::format_address ($email, %opts) {
+    val $r = { email => $email, name => $opts{name} }
+    Email::_decode("format_address", email__format_address(to_json($r)))->{value}
+}
+
+## Build a `mailto:` URL. %opts: subject, body, cc, bcc (all percent-encoded).
+fn Email::mailto ($to, %opts) {
+    var %r = (to => $to)
+    for val $k (qw(subject body cc bcc)) {
+        $r{$k} = $opts{$k} if exists $opts{$k} && defined $opts{$k}
+    }
+    Email::_decode("mailto", email__mailto(to_json(\%r)))->{url}
+}
