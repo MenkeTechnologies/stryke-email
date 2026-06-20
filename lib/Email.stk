@@ -1,0 +1,141 @@
+## lib/Email.stk — Email / campaign client for stryke (`use Email`).
+##
+## Thin wrapper around the `stryke-email` cdylib's `email__*` exports. The
+## cdylib is dlopened in-process on first `use Email` and registers each export
+## via `rust_ffi::load_cdylib`. Every wrapper builds a JSON args dict, calls the
+## FFI symbol, and parses the JSON return.
+##
+## Transport is blocking SMTP over `lettre` (rustls, no tokio), through *your
+## own* authenticated SMTP server. The `SmtpTransport` is cached per
+## `(host, port, tls, user)`, so a mass mailing reuses one pooled connection.
+##
+## Mass mailing is built to be legitimate: Email::send_bulk auto-injects a
+## List-Unsubscribe header, honors a suppression list, and rate-limits. Consent
+## and honoring opt-outs (CAN-SPAM / GDPR) are the sender's responsibility.
+
+package Email
+
+# ── error dispatch ────────────────────────────────────────────────────
+
+## Decode the JSON from an `email__*` FFI call; die on a reported error.
+fn Email::_decode ($name, $json) {
+    val $o = from_json $json
+    if (ref $o eq "HASH" && exists $o->{error}) {
+        die "Email::$name: $o->{error}"
+    }
+    $o
+}
+
+## Merge SMTP connection params from %opts into the per-call request hash.
+## Falls back to $SMTP_URL-style env (host/user/pass) when not supplied.
+fn Email::_req ($extra, $opts) {
+    var %r = %$extra
+    for val $k (qw(host port tls username password)) {
+        $r{$k} = $opts->{$k} if exists $opts->{$k} && defined $opts->{$k}
+    }
+    if (!exists $r{host} && defined $ENV{SMTP_HOST}) {
+        $r{host}     = $ENV{SMTP_HOST}
+        $r{username} = $ENV{SMTP_USER} if defined $ENV{SMTP_USER}
+        $r{password} = $ENV{SMTP_PASS} if defined $ENV{SMTP_PASS}
+    }
+    \%r
+}
+
+# ── version + connection ──────────────────────────────────────────────
+
+## Package version string.
+fn Email::version {
+    Email::_decode("version", email__version("{}"))->{version}
+}
+
+## Open + test the SMTP connection (EHLO/NOOP). Returns 1 on success.
+fn Email::verify_connection (%opts) {
+    val $r = Email::_req({}, \%opts)
+    Email::_decode("verify_connection", email__verify_connection(to_json($r)))->{ok}
+}
+
+# ── send one message ──────────────────────────────────────────────────
+
+## Send a single message. $msg is a hashref:
+##   { from, to, subject, text?, html?, cc?, bcc?, reply_to?,
+##     list_unsubscribe => { url?, mailto? } }
+## `to`/`cc`/`bcc` accept a string or arrayref. %opts carries SMTP params.
+fn Email::send ($msg, %opts) {
+    val $r = Email::_req($msg, \%opts)
+    Email::_decode("send", email__send(to_json($r)))->{ok}
+}
+
+## Send a pre-built RFC 5322 message. $raw is the full message string; pass
+## envelope `from` and `to` (string or arrayref) explicitly.
+fn Email::send_raw ($raw, $from, $to, %opts) {
+    val $r = Email::_req({ raw => $raw, from => $from, to => $to }, \%opts)
+    Email::_decode("send_raw", email__send_raw(to_json($r)))->{ok}
+}
+
+# ── mass mailing / campaign ───────────────────────────────────────────
+
+## Send a personalized campaign. Per recipient: skip if suppressed, merge the
+## template with the recipient's vars (+ `email`/`name`), inject
+## List-Unsubscribe, send, record the outcome; throttled by %opts{rate}.
+##
+##   $template   { subject, text?, html? }   ({{var}} placeholders)
+##   $recipients [ { email, name?, vars => {...} }, ... ]
+##   %opts: from (required), host/port/tls/username/password,
+##          rate => { delay_ms => N }  or  { per_minute => N },
+##          suppression => [ emails ],
+##          list_unsubscribe => { url?, mailto? }  (url may use {{email}})
+##
+## Returns { sent, failed, skipped, results => [ { email, ok, error? } ] }.
+fn Email::send_bulk ($template, $recipients, %opts) {
+    val $list = ref($recipients) eq "ARRAY" ? $recipients : [$recipients]
+    val $extra = {
+        template         => $template,
+        recipients       => $list,
+        from             => $opts{from},
+        rate             => $opts{rate},
+        suppression      => $opts{suppression},
+        list_unsubscribe => $opts{list_unsubscribe},
+    }
+    val $r = Email::_req($extra, \%opts)
+    Email::_decode("send_bulk", email__send_bulk(to_json($r)))
+}
+
+# ── pure helpers (no SMTP) ────────────────────────────────────────────
+
+## Render a template hashref `{ subject, text, html }` with $vars. Returns the
+## rendered hashref. No network.
+fn Email::render ($template, $vars) {
+    val $r = { template => $template, vars => $vars }
+    Email::_decode("render", email__render(to_json($r)))->{value}
+}
+
+## Substitute `{{ key }}` placeholders in $template (a string) with $vars.
+fn Email::merge ($template, $vars) {
+    val $r = { template => $template, vars => $vars }
+    Email::_decode("merge", email__merge(to_json($r)))->{value}
+}
+
+## True when $address looks like a valid RFC 5322 address (no MX lookup).
+fn Email::validate ($address) {
+    Email::_decode("validate", email__validate_address(to_json({ address => $address })))->{valid}
+}
+
+## Split "Name <user\@host>" into `{ name, email }`.
+fn Email::parse ($address) {
+    Email::_decode("parse", email__parse_address(to_json({ address => $address })))
+}
+
+## Build a List-Unsubscribe header value from a url and/or mailto.
+fn Email::unsubscribe_header (%opts) {
+    val $r = { url => $opts{url}, mailto => $opts{mailto} }
+    Email::_decode("unsubscribe_header", email__unsubscribe_header(to_json($r)))->{value}
+}
+
+## Split $recipients into kept / removed by a $suppression arrayref of emails.
+## Returns `{ kept => [...], removed => [...] }`. Run before a campaign.
+fn Email::suppress_filter ($recipients, $suppression) {
+    val $list = ref($recipients) eq "ARRAY" ? $recipients : [$recipients]
+    val $supp = ref($suppression) eq "ARRAY" ? $suppression : [$suppression]
+    val $r = { recipients => $list, suppression => $supp }
+    Email::_decode("suppress_filter", email__suppress_filter(to_json($r)))
+}

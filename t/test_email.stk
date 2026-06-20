@@ -1,0 +1,62 @@
+## t/test_email.stk — assertion tests for the stryke `Email` package.
+##
+## The connection-free asserts always run. The send asserts need a live SMTP
+## server via $SMTP_HOST (+ $SMTP_USER / $SMTP_PASS); they short-circuit when
+## none is configured so CI without a mail server stays green. Point
+## $SMTP_HOST at a local catch-all (e.g. MailHog on 127.0.0.1:1025, tls=none)
+## to exercise the send path without emailing anyone real.
+
+use Email
+
+# ── permission-free: cdylib reachable ───────────────────────────────
+assert_ok Email::version(), "Email::version returns truthy (cdylib loaded)"
+
+# ── connection-free helpers ─────────────────────────────────────────
+assert_eq Email::merge("{{a}}-{{b}}", { a => "1", b => "2" }), "1-2", "merge"
+assert_ok Email::validate("ok\@example.com"), "validate ok"
+
+# ── live SMTP (opt-in) ──────────────────────────────────────────────
+var %conn
+if (defined $ENV{SMTP_HOST}) {
+    $conn{host}     = $ENV{SMTP_HOST}
+    $conn{tls}      = $ENV{SMTP_TLS}  // "none"
+    $conn{username} = $ENV{SMTP_USER} if defined $ENV{SMTP_USER}
+    $conn{password} = $ENV{SMTP_PASS} if defined $ENV{SMTP_PASS}
+
+    val $up = eval { Email::verify_connection(%conn) }
+    if ($up) {
+        val $from = $ENV{SMTP_FROM} // "stryke-test\@example.com"
+
+        # 1. single send
+        val $ok = Email::send(
+            {
+                from    => $from,
+                to      => "rcpt\@example.com",
+                subject => "stryke-email test $$",
+                text    => "plain body",
+                html    => "<b>rich body</b>",
+            },
+            %conn,
+        )
+        assert_ok $ok, "single send accepted"
+
+        # 2. campaign: personalized, with suppression + unsubscribe
+        val $res = Email::send_bulk(
+            { subject => "Hi {{name}}", text => "Hello {{name}} <{{email}}>" },
+            [
+                { email => "one\@example.com", name => "One" },
+                { email => "two\@example.com", name => "Two" },
+                { email => "blocked\@example.com", name => "Blocked" },
+            ],
+            from             => $from,
+            suppression      => ["blocked\@example.com"],
+            rate             => { delay_ms => 10 },
+            list_unsubscribe => { url => "https://example.com/u?e={{email}}" },
+            %conn,
+        )
+        assert_eq $res->{sent}, 2, "campaign sent to two recipients"
+        assert_eq $res->{skipped}, 1, "campaign skipped the suppressed recipient"
+    }
+}
+
+test_run

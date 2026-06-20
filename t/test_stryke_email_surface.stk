@@ -1,0 +1,59 @@
+## t/test_stryke_email_surface.stk — wrapper-completeness + pure-helper pin.
+##
+## Asserts every public `fn Email::name` resolves via `use`, then exercises the
+## connection-free helpers (merge, render, validate, parse, unsubscribe header,
+## suppression). Permission-free — no SMTP server, so CI validates the surface
+## and the template/compliance logic with nothing to connect to.
+
+use Email
+
+# ── wrapper surface ────────────────────────────────────────
+assert_ok exists &Email::version, "Email::version exists"
+assert_ok exists &Email::verify_connection, "Email::verify_connection exists"
+assert_ok exists &Email::send, "Email::send exists"
+assert_ok exists &Email::send_raw, "Email::send_raw exists"
+assert_ok exists &Email::send_bulk, "Email::send_bulk exists"
+assert_ok exists &Email::render, "Email::render exists"
+assert_ok exists &Email::merge, "Email::merge exists"
+assert_ok exists &Email::validate, "Email::validate exists"
+assert_ok exists &Email::parse, "Email::parse exists"
+assert_ok exists &Email::unsubscribe_header, "Email::unsubscribe_header exists"
+assert_ok exists &Email::suppress_filter, "Email::suppress_filter exists"
+
+# ── version (cdylib loaded) ────────────────────────────────
+assert_ok Email::version(), "Email::version returns truthy (cdylib loaded)"
+
+# ── template merge ─────────────────────────────────────────
+assert_eq Email::merge("Hi {{name}}, your {{plan}} renews", { name => "Ada", plan => "Pro" }),
+    "Hi Ada, your Pro renews", "merge substitutes placeholders"
+assert_eq Email::merge("x={{missing}}y", {}), "x=y", "unknown placeholder renders empty"
+
+# ── render a subject/text/html template ────────────────────
+val $r = Email::render(
+    { subject => "Welcome {{name}}", text => "Hi {{name}}", html => "<b>Hi {{name}}</b>" },
+    { name => "Ada" },
+)
+assert_eq $r->{subject}, "Welcome Ada", "render subject"
+assert_eq $r->{text}, "Hi Ada", "render text"
+assert_eq $r->{html}, "<b>Hi Ada</b>", "render html"
+
+# ── address validation + parsing ───────────────────────────
+assert_ok Email::validate("user\@example.com"), "valid address passes"
+assert_eq Email::validate("not-an-address"), 0, "invalid address fails"
+val $p = Email::parse("Ada Lovelace <ada\@example.com>")
+assert_eq $p->{name}, "Ada Lovelace", "parse name"
+assert_eq $p->{email}, "ada\@example.com", "parse email"
+
+# ── List-Unsubscribe header ────────────────────────────────
+assert_eq Email::unsubscribe_header(url => "https://x.com/u", mailto => "unsub\@x.com"),
+    "<https://x.com/u>, <mailto:unsub\@x.com>", "unsubscribe header value"
+
+# ── suppression filtering ──────────────────────────────────
+val $f = Email::suppress_filter(
+    [ { email => "a\@x.com" }, { email => "b\@x.com" }, { email => "c\@x.com" } ],
+    ["b\@x.com"],
+)
+assert_eq scalar(@{ $f->{kept} }), 2, "two recipients kept"
+assert_eq scalar(@{ $f->{removed} }), 1, "one recipient suppressed"
+
+test_run

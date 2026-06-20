@@ -1,0 +1,32 @@
+[package]
+name = "stryke-email"
+version = "0.1.0"
+description = "Email / campaign client for stryke. cdylib loaded in-process — SMTP send, mass mailing with templates + suppression + List-Unsubscribe + rate limiting, through your own authenticated SMTP."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/stryke-email"
+edition = "2026"
+
+[ffi]
+lib-name = "stryke_email"
+namespace = "Email"
+exports = [
+    "email__version",
+    "email__verify_connection",
+    "email__send",
+    "email__send_raw",
+    "email__send_bulk",
+    "email__render",
+    "email__merge",
+    "email__validate_address",
+    "email__parse_address",
+    "email__unsubscribe_header",
+    "email__suppress_filter",
+]
+
+[scripts]
+build = "cargo build --release"
+build-debug = "cargo build"
+clean = "cargo clean"
+test = "s test t/"
+install = "s pkg install -g ."

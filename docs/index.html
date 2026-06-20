@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="stryke-email — email + campaign client for stryke. SMTP send, personalized mass mailing, templates, List-Unsubscribe, suppression lists, rate limiting — through your own authenticated SMTP. Opt-in Rust cdylib.">
+  <title>stryke-email — Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+    .example-tbl { width: 100%; border-collapse: collapse; margin: 0.6rem 0; font-size: 12.5px; }
+    .example-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .example-tbl td:first-child { white-space: nowrap; color: var(--accent); font-family: 'Share Tech Mono', ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <div class="tutorial-wrap">
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <h1 class="tutorial-brand">// STRYKE-EMAIL &mdash; EMAIL + CAMPAIGN CLIENT FOR STRYKE</h1>
+        <nav class="tutorial-nav">
+          <a href="report.html">Engineering report</a>
+          <a href="https://github.com/MenkeTechnologies/stryke-email" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="https://github.com/MenkeTechnologies/strykelang" target="_blank" rel="noopener noreferrer">strykelang</a>
+          <a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">Meta</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="tutorial-main">
+      <section>
+        <h2>What it is</h2>
+        <p>
+          <code>stryke-email</code> is transactional and campaign email for
+          <a href="https://github.com/MenkeTechnologies/strykelang" target="_blank" rel="noopener noreferrer">stryke</a>:
+          single send, personalized mass mailing, <code>{{merge}}</code>
+          templates, List-Unsubscribe headers, suppression lists, and rate
+          limiting — all over <strong>your own authenticated SMTP</strong>. Built
+          on <code>lettre</code> with a pooled blocking transport (rustls, no
+          tokio), cached per <code>(host, port, tls, user)</code>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Send one message</h2>
+        <pre><code>use Email
+
+var %conn = ( host =&gt; "smtp.example.com", username =&gt; "me", password =&gt; $ENV{SMTP_PASS} )
+
+Email::send(
+    { from =&gt; "Me &lt;me@example.com&gt;", to =&gt; "customer@example.com",
+      subject =&gt; "Your license key", text =&gt; "Key: ABC-123" },
+    %conn,
+)</code></pre>
+      </section>
+
+      <section>
+        <h2>Mass mailing</h2>
+        <pre><code>val $res = Email::send_bulk(
+    { subject =&gt; "Hi {{name}}", html =&gt; "&lt;p&gt;Hi {{name}}&lt;/p&gt;" },
+    [ { email =&gt; "ada@example.com", name =&gt; "Ada" },
+      { email =&gt; "alan@example.com", name =&gt; "Alan" } ],
+    from             =&gt; "Me &lt;me@example.com&gt;",
+    suppression      =&gt; $opt_outs,
+    rate             =&gt; { per_minute =&gt; 120 },
+    list_unsubscribe =&gt; { url =&gt; "https://example.com/u?e={{email}}" },
+    %conn,
+)
+p $res-&gt;{sent}      # 2</code></pre>
+        <p>Each recipient's template is merged with their vars; sends are throttled by <code>rate</code>; suppressed addresses are skipped.</p>
+      </section>
+
+      <section>
+        <h2>Compliance, built in</h2>
+        <p>For sending to your own opted-in recipients through your own SMTP. The package ships the mechanisms that keep that legitimate:</p>
+        <table class="example-tbl">
+          <tr><td>List-Unsubscribe</td><td>RFC 2369 / 8058 one-click header auto-added to every <code>send_bulk</code> message.</td></tr>
+          <tr><td>Suppression</td><td><code>suppress_filter</code> + <code>send_bulk</code> honor opt-outs and bounces.</td></tr>
+          <tr><td>Rate limiting</td><td><code>per_minute</code> / <code>delay_ms</code> for deliverability and provider limits.</td></tr>
+          <tr><td>Validation</td><td>Address checks before sending.</td></tr>
+        </table>
+        <p>Consent and honoring unsubscribes (CAN-SPAM, GDPR) is the sender's responsibility — the package gives you the tools, not a way around them.</p>
+      </section>
+
+      <section>
+        <h2>API surface</h2>
+        <table class="example-tbl">
+          <tr><td>Send</td><td>send, send_raw, send_bulk, verify_connection</td></tr>
+          <tr><td>Templates</td><td>render, merge</td></tr>
+          <tr><td>Lists</td><td>validate, parse, unsubscribe_header, suppress_filter</td></tr>
+        </table>
+        <p>The full API lives in the <a href="https://github.com/MenkeTechnologies/stryke-email#readme">README</a>.</p>
+      </section>
+
+      <section>
+        <h2>Package family</h2>
+        <p>Part of the stryke connector family under the <a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">MenkeTechnologiesMeta</a> umbrella:</p>
+        <ul>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-search" target="_blank" rel="noopener noreferrer">stryke-search</a> — Elasticsearch / OpenSearch</li>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-redis" target="_blank" rel="noopener noreferrer">stryke-redis</a> — Redis / Valkey</li>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-postgres" target="_blank" rel="noopener noreferrer">stryke-postgres</a> — PostgreSQL</li>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-office" target="_blank" rel="noopener noreferrer">stryke-office</a> — Office / PDF / images</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="tutorial-footer">
+      <p>MIT &middot; MenkeTechnologies</p>
+    </footer>
+  </div>
+  <script src="hud-theme.js"></script>
+</body>
+</html>
