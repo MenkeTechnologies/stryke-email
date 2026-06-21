@@ -2,7 +2,7 @@
 name = "stryke-email"
 version = "0.2.0"
 edition = "2021"
-description = "Email / campaign cdylib for the stryke `email` package — SMTP send, mass mailing, templates, unsubscribe + suppression. Wraps lettre."
+description = "Email / campaign cdylib for the stryke `email` package — SMTP send, mass mailing, templates, unsubscribe + suppression. Wraps lettre"
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-email"
