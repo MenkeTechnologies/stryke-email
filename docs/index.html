@@ -109,10 +109,10 @@ p $res-&gt;{sent}      # 2</pre>
       <section class="tutorial-section">
         <h2>API surface</h2>
         <table class="example-tbl">
-          <tr><td>Send</td><td><code>send</code>, <code>send_raw</code>, <code>send_bulk</code>, <code>verify_connection</code></td></tr>
+          <tr><td>Send</td><td><code>send</code>, <code>send_raw</code>, <code>send_bulk</code>, <code>send_template</code>, <code>build_message</code>, <code>verify_connection</code></td></tr>
           <tr><td>Templates</td><td><code>render</code>, <code>merge</code>, <code>merge_many</code></td></tr>
-          <tr><td>Addresses</td><td><code>validate</code>, <code>validate_list</code>, <code>parse</code>, <code>split_addresses</code>, <code>format_address</code>, <code>domain</code></td></tr>
-          <tr><td>Lists</td><td><code>unsubscribe_header</code>, <code>suppress_filter</code>, <code>mailto</code></td></tr>
+          <tr><td>Addresses</td><td><code>validate</code>, <code>validate_list</code>, <code>validate_message</code>, <code>parse</code>, <code>split_addresses</code>, <code>format_address</code>, <code>domain</code>, <code>normalize</code></td></tr>
+          <tr><td>Lists</td><td><code>unsubscribe_header</code>, <code>suppress_filter</code>, <code>dedupe</code>, <code>chunk</code>, <code>group_by_domain</code>, <code>mailto</code></td></tr>
           <tr><td>URL</td><td><code>parse_url</code>, <code>build_url</code>, <code>redact_url</code></td></tr>
         </table>
         <p>The full API lives in the <a href="https://github.com/MenkeTechnologies/stryke-email#readme" target="_blank" rel="noopener noreferrer">README</a>.</p>

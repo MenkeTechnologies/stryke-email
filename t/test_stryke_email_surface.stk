@@ -19,6 +19,13 @@ assert_ok exists &Email::validate, "Email::validate exists"
 assert_ok exists &Email::parse, "Email::parse exists"
 assert_ok exists &Email::unsubscribe_header, "Email::unsubscribe_header exists"
 assert_ok exists &Email::suppress_filter, "Email::suppress_filter exists"
+assert_ok exists &Email::build_message, "Email::build_message exists"
+assert_ok exists &Email::send_template, "Email::send_template exists"
+assert_ok exists &Email::validate_message, "Email::validate_message exists"
+assert_ok exists &Email::dedupe, "Email::dedupe exists"
+assert_ok exists &Email::chunk, "Email::chunk exists"
+assert_ok exists &Email::group_by_domain, "Email::group_by_domain exists"
+assert_ok exists &Email::normalize, "Email::normalize exists"
 
 # ── version (cdylib loaded) ────────────────────────────────
 assert_ok Email::version(), "Email::version returns truthy (cdylib loaded)"
@@ -55,5 +62,45 @@ val $f = Email::suppress_filter(
 )
 assert_eq scalar(@{ $f->{kept} }), 2, "two recipients kept"
 assert_eq scalar(@{ $f->{removed} }), 1, "one recipient suppressed"
+
+# ── build a raw message without sending ────────────────────
+val $raw = Email::build_message(
+    { from => "s\@example.com", to => "r\@example.com", subject => "Subj", text => "body" }
+)
+assert_ok index($raw, "Subject: Subj") >= 0, "build_message includes subject header"
+assert_ok index($raw, "body") >= 0, "build_message includes body"
+
+# ── address normalization (domain lowercased, local kept) ──
+assert_eq Email::normalize("Ada <Ada\@Example.COM>"), "Ada\@example.com", "normalize lowercases domain only"
+
+# ── message preflight ──────────────────────────────────────
+val $bad = Email::validate_message({ subject => "x" })
+assert_eq $bad->{ok}, 0, "message missing from/to/body is invalid"
+assert_ok scalar(@{ $bad->{errors} }) >= 3, "preflight reports each problem"
+val $good = Email::validate_message(
+    { from => "s\@example.com", to => "r\@example.com", text => "hi" }
+)
+assert_ok $good->{ok}, "complete message passes preflight"
+
+# ── dedupe by normalized email ─────────────────────────────
+val $d = Email::dedupe(
+    [ { email => "a\@x.com" }, { email => "A\@X.com" }, { email => "b\@x.com" } ]
+)
+assert_eq scalar(@{ $d->{unique} }), 2, "two unique after case-insensitive dedupe"
+assert_eq scalar(@{ $d->{duplicates} }), 1, "one duplicate detected"
+
+# ── chunk into batches ─────────────────────────────────────
+val $batches = Email::chunk([ "a", "b", "c", "d", "e" ], 2)
+assert_eq scalar(@$batches), 3, "five recipients chunked into three batches of <=2"
+assert_eq scalar(@{ $batches->[0] }), 2, "first batch holds two"
+assert_eq scalar(@{ $batches->[2] }), 1, "last batch holds the remainder"
+
+# ── group addresses by domain ──────────────────────────────
+val $g = Email::group_by_domain([ "a\@x.com", "b\@x.com", "c\@y.com" ])
+assert_eq scalar(@{ $g->{"x.com"} }), 2, "two addresses bucketed under x.com"
+assert_eq scalar(@{ $g->{"y.com"} }), 1, "one address bucketed under y.com"
+
+# ── send_template wrapper resolves (no SMTP needed to pin surface) ──
+assert_ok exists &Email::send_template, "Email::send_template callable"
 
 test_run

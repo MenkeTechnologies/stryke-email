@@ -984,6 +984,238 @@ pub extern "C" fn email__redact_url(args: *const c_char) -> *const c_char {
     })
 }
 
+// ── pure list ops + message preflight (no network; CI-tested) ────────────────
+
+/// Strip any display name, trim, and lowercase the domain of an address. The
+/// local part keeps its case (RFC 5321 says only the domain is
+/// case-insensitive). The canonical form used for suppression / dedup matching.
+fn normalize_address(addr: &str) -> String {
+    let (_, email) = split_address(addr);
+    let email = email.trim();
+    match email.rsplit_once('@') {
+        Some((local, domain)) => format!("{local}@{}", domain.to_lowercase()),
+        None => email.to_string(),
+    }
+}
+
+/// The `email` key of a recipient value (object with `email`, or a bare string).
+fn recipient_email(r: &Value) -> &str {
+    r.get("email")
+        .and_then(|x| x.as_str())
+        .or_else(|| r.as_str())
+        .unwrap_or("")
+        .trim()
+}
+
+/// Build a message dict from a `{ subject, text, html }` template merged with
+/// `vars`, layered over the static fields in `msg` (from/to/cc/etc.). Shared by
+/// `email__send_template` and `email__render` callers that then send.
+fn templated_fields(
+    template: &Value,
+    vars: &Map<String, Value>,
+    msg: &Value,
+) -> Map<String, Value> {
+    let mut fields = msg.as_object().cloned().unwrap_or_default();
+    for field in ["subject", "text", "html"] {
+        if let Some(s) = template.get(field).and_then(|x| x.as_str()) {
+            fields.insert(field.into(), json!(render_template(s, vars)));
+        }
+    }
+    fields
+}
+
+/// Build a single message and return its formatted RFC 5322 bytes as a string,
+/// without connecting to any SMTP server. For previewing, signing, or queueing a
+/// message before handing it to `send_raw`.
+#[no_mangle]
+pub extern "C" fn email__build_message(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let msg = build_message(&v)?;
+        let raw = String::from_utf8(msg.formatted())
+            .map_err(|e| anyhow!("formatted message not utf-8: {e}"))?;
+        Ok(json!({ "raw": raw }))
+    })
+}
+
+/// Render a `{ subject, text, html }` template with `vars`, merge over the
+/// static `message` fields, then send through the cached transport. The single-
+/// message analog of `send_bulk`'s per-recipient merge.
+#[no_mangle]
+pub extern "C" fn email__send_template(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let template = v
+            .get("template")
+            .ok_or_else(|| anyhow!("missing template"))?;
+        let empty = Map::new();
+        let vars = v.get("vars").and_then(|x| x.as_object()).unwrap_or(&empty);
+        let base = v.get("message").cloned().unwrap_or(Value::Null);
+        let mut fields = templated_fields(template, vars, &base);
+        // carry the connection params + list_unsubscribe through to build/send
+        for k in [
+            "host",
+            "port",
+            "tls",
+            "username",
+            "password",
+            "list_unsubscribe",
+        ] {
+            if let Some(x) = v.get(k) {
+                fields.insert(k.into(), x.clone());
+            }
+        }
+        let merged = Value::Object(fields);
+        let msg = build_message(&merged)?;
+        let t = transport_for(&merged)?;
+        t.send(&msg).map_err(|e| anyhow!("send: {e}"))?;
+        Ok(json!({ "ok": true }))
+    })
+}
+
+/// Remove duplicate recipients by normalized email (first occurrence wins).
+/// Returns `{ unique: [...], duplicates: [...] }` so the caller can log dupes.
+#[no_mangle]
+pub extern "C" fn email__dedupe(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let recipients = v
+            .get("recipients")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| anyhow!("missing recipients array"))?;
+        let mut seen = std::collections::HashSet::new();
+        let (mut unique, mut duplicates) = (Vec::new(), Vec::new());
+        for r in recipients {
+            let key = normalize_address(recipient_email(r)).to_lowercase();
+            if key.is_empty() || seen.insert(key) {
+                unique.push(r.clone());
+            } else {
+                duplicates.push(r.clone());
+            }
+        }
+        Ok(json!({ "unique": unique, "duplicates": duplicates }))
+    })
+}
+
+/// Split a recipient list into batches of at most `size` for per-batch provider
+/// limits. Returns `{ batches: [[...], ...] }`. A `size` of 0 is one batch.
+#[no_mangle]
+pub extern "C" fn email__chunk(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let recipients = v
+            .get("recipients")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| anyhow!("missing recipients array"))?;
+        let size = v.get("size").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+        let batches: Vec<Value> = if size == 0 {
+            vec![json!(recipients.clone())]
+        } else {
+            recipients.chunks(size).map(|c| json!(c.to_vec())).collect()
+        };
+        Ok(json!({ "batches": batches }))
+    })
+}
+
+/// Bucket addresses by their (lowercased) domain for per-domain throttling.
+/// Returns `{ groups: { "example.com": ["a@example.com", ...], ... } }`.
+/// Accepts bare strings or `{ email }` objects.
+#[no_mangle]
+pub extern "C" fn email__group_by_domain(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let addrs = v
+            .get("addresses")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| anyhow!("missing addresses array"))?;
+        let mut groups: Map<String, Value> = Map::new();
+        for a in addrs {
+            let raw = a.as_str().map(String::from).unwrap_or_else(|| {
+                a.get("email")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            });
+            let (_, email) = split_address(&raw);
+            let Some((_, domain)) = email.split_once('@') else {
+                continue;
+            };
+            let domain = domain.trim().to_lowercase();
+            if domain.is_empty() {
+                continue;
+            }
+            groups
+                .entry(domain)
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .unwrap()
+                .push(json!(email));
+        }
+        Ok(json!({ "groups": groups }))
+    })
+}
+
+/// Canonicalize an address for suppression / dedup matching: drop the display
+/// name, trim, lowercase the domain.
+#[no_mangle]
+pub extern "C" fn email__normalize_address(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let addr = v
+            .get("address")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing address"))?;
+        Ok(json!({ "value": normalize_address(addr) }))
+    })
+}
+
+/// Pre-flight a message dict before sending: returns `{ ok, errors: [...] }`
+/// listing what's missing or malformed (no `from`/invalid `from`, no
+/// recipients, every recipient invalid, no body). Network-free.
+#[no_mangle]
+pub extern "C" fn email__validate_message(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let mut errors: Vec<String> = Vec::new();
+
+        match v.get("from").and_then(|x| x.as_str()) {
+            None => errors.push("missing from".to_string()),
+            Some(f) => {
+                let (_, email) = split_address(f);
+                if !is_valid_address(&email) {
+                    errors.push(format!("invalid from address: {email}"));
+                }
+            }
+        }
+
+        // collect all recipient addresses across to/cc/bcc
+        let mut recipients: Vec<String> = Vec::new();
+        for key in ["to", "cc", "bcc"] {
+            match v.get(key) {
+                Some(Value::String(s)) => recipients.push(s.clone()),
+                Some(Value::Array(a)) => {
+                    recipients.extend(a.iter().filter_map(|x| x.as_str().map(String::from)))
+                }
+                _ => {}
+            }
+        }
+        if recipients.is_empty() {
+            errors.push("no recipients (to/cc/bcc)".to_string());
+        } else if recipients
+            .iter()
+            .all(|r| !is_valid_address(&split_address(r).1))
+        {
+            errors.push("every recipient address is invalid".to_string());
+        }
+
+        let has_body = v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .is_some_and(|s| !s.is_empty())
+            || v.get("html")
+                .and_then(|x| x.as_str())
+                .is_some_and(|s| !s.is_empty());
+        if !has_body {
+            errors.push("empty body (no text or html)".to_string());
+        }
+
+        Ok(json!({ "ok": errors.is_empty(), "errors": errors }))
+    })
+}
+
 // ── unit tests (pure logic) ─────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1165,5 +1397,44 @@ mod tests {
             "smtps://user:***@mail:465"
         );
         assert_eq!(redact_smtp_url("smtp://mail:587"), "smtp://mail:587");
+    }
+
+    #[test]
+    fn normalize_lowercases_domain_only() {
+        assert_eq!(
+            normalize_address("Ada <Ada@Example.COM>"),
+            "Ada@example.com"
+        );
+        assert_eq!(normalize_address("  USER@Host.IO "), "USER@host.io");
+        // no domain → passthrough trimmed local
+        assert_eq!(normalize_address("malformed"), "malformed");
+    }
+
+    #[test]
+    fn templated_fields_merges_over_base() {
+        let tmpl = json!({ "subject": "Hi {{name}}", "text": "to {{email}}" });
+        let vars = vars(&[("name", "Ada"), ("email", "a@x.com")]);
+        let base = json!({ "from": "s@x.com", "to": "a@x.com", "subject": "old" });
+        let out = templated_fields(&tmpl, &vars, &base);
+        assert_eq!(out.get("subject").unwrap(), &json!("Hi Ada"));
+        assert_eq!(out.get("text").unwrap(), &json!("to a@x.com"));
+        // static field survives
+        assert_eq!(out.get("from").unwrap(), &json!("s@x.com"));
+    }
+
+    #[test]
+    fn build_message_emits_full_rfc5322() {
+        let v = json!({
+            "from": "s@example.com",
+            "to": "r@example.com",
+            "subject": "Subj",
+            "text": "body",
+        });
+        let msg = build_message(&v).unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("From: s@example.com"));
+        assert!(raw.contains("To: r@example.com"));
+        assert!(raw.contains("Subject: Subj"));
+        assert!(raw.contains("body"));
     }
 }

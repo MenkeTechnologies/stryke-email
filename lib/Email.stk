@@ -194,3 +194,57 @@ fn Email::build_url ($parts) {
 fn Email::redact_url ($url) {
     Email::_decode("redact_url", email__redact_url(to_json({ url => $url })))->{value}
 }
+
+# ── message preflight + list ops (no SMTP) ────────────────────────────
+
+## Build $msg into a raw RFC 5322 message string without sending — for
+## previewing, signing, or queueing before `Email::send_raw`. $msg is the same
+## hashref as `Email::send`. No network.
+fn Email::build_message ($msg) {
+    Email::_decode("build_message", email__build_message(to_json($msg)))->{raw}
+}
+
+## Render a `{ subject, text?, html? }` $template with $vars, layer it over the
+## static fields in $msg (from/to/cc/...), and send. The single-message analog
+## of `send_bulk`'s per-recipient merge. %opts carries SMTP params.
+fn Email::send_template ($template, $vars, $msg, %opts) {
+    val $extra = { template => $template, vars => $vars, message => $msg,
+                   list_unsubscribe => $msg->{list_unsubscribe} }
+    val $r = Email::_req($extra, \%opts)
+    Email::_decode("send_template", email__send_template(to_json($r)))->{ok}
+}
+
+## Pre-flight a $msg hashref before sending: returns `{ ok, errors => [...] }`
+## listing what's missing/malformed (no/invalid from, no recipients, all
+## recipients invalid, empty body). Network-free.
+fn Email::validate_message ($msg) {
+    Email::_decode("validate_message", email__validate_message(to_json($msg)))
+}
+
+## Drop duplicate recipients by normalized email (first wins). Returns
+## `{ unique => [...], duplicates => [...] }`. Run before a campaign.
+fn Email::dedupe ($recipients) {
+    val $list = ref($recipients) eq "ARRAY" ? $recipients : [$recipients]
+    Email::_decode("dedupe", email__dedupe(to_json({ recipients => $list })))
+}
+
+## Split $recipients into batches of at most $size (0 = one batch) for per-batch
+## provider limits. Returns an arrayref of arrayrefs.
+fn Email::chunk ($recipients, $size) {
+    val $list = ref($recipients) eq "ARRAY" ? $recipients : [$recipients]
+    val $r = { recipients => $list, size => $size }
+    Email::_decode("chunk", email__chunk(to_json($r)))->{batches}
+}
+
+## Bucket $addresses (bare strings or `{ email }` hashrefs) by lowercased
+## domain. Returns `{ "example.com" => [emails], ... }` for per-domain throttling.
+fn Email::group_by_domain ($addresses) {
+    val $list = ref($addresses) eq "ARRAY" ? $addresses : [$addresses]
+    Email::_decode("group_by_domain", email__group_by_domain(to_json({ addresses => $list })))->{groups}
+}
+
+## Canonicalize an address for suppression/dedup matching: strip display name,
+## trim, lowercase the domain (local part keeps case).
+fn Email::normalize ($address) {
+    Email::_decode("normalize", email__normalize_address(to_json({ address => $address })))->{value}
+}

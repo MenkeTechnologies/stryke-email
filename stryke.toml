@@ -31,6 +31,13 @@ exports = [
     "email__parse_url",
     "email__build_url",
     "email__redact_url",
+    "email__build_message",
+    "email__send_template",
+    "email__validate_message",
+    "email__dedupe",
+    "email__chunk",
+    "email__group_by_domain",
+    "email__normalize_address",
 ]
 
 [scripts]

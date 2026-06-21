@@ -140,10 +140,10 @@ around them.
 
 | Group     | Functions                                                                       |
 | --------- | ------------------------------------------------------------------------------- |
-| Send      | `send`, `send_raw`, `send_bulk`, `verify_connection`                             |
+| Send      | `send`, `send_raw`, `send_bulk`, `send_template`, `build_message`, `verify_connection` |
 | Templates | `render`, `merge`, `merge_many`                                                  |
-| Addresses | `validate`, `validate_list`, `parse`, `split_addresses`, `format_address`, `domain` |
-| Lists     | `unsubscribe_header`, `suppress_filter`, `mailto`                                |
+| Addresses | `validate`, `validate_list`, `validate_message`, `parse`, `split_addresses`, `format_address`, `domain`, `normalize` |
+| Lists     | `unsubscribe_header`, `suppress_filter`, `dedupe`, `chunk`, `group_by_domain`, `mailto` |
 | URL       | `parse_url`, `build_url`, `redact_url`                                           |
 | Meta      | `version`                                                                        |
 
