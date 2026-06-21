@@ -179,3 +179,18 @@ fn Email::mailto ($to, %opts) {
     }
     Email::_decode("mailto", email__mailto(to_json(\%r)))->{url}
 }
+
+## Parse an SMTP URI into `{ scheme, host, port, tls, username, password }`.
+fn Email::parse_url ($url) {
+    Email::_decode("parse_url", email__parse_url(to_json({ url => $url })))->{parts}
+}
+
+## Build an SMTP URI from a $parts hashref (inverse of parse_url).
+fn Email::build_url ($parts) {
+    Email::_decode("build_url", email__build_url(to_json({ parts => $parts })))->{value}
+}
+
+## Redact the password in an SMTP URI for safe logging.
+fn Email::redact_url ($url) {
+    Email::_decode("redact_url", email__redact_url(to_json({ url => $url })))->{value}
+}

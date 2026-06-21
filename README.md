@@ -144,6 +144,7 @@ around them.
 | Templates | `render`, `merge`, `merge_many`                                                  |
 | Addresses | `validate`, `validate_list`, `parse`, `split_addresses`, `format_address`, `domain` |
 | Lists     | `unsubscribe_header`, `suppress_filter`, `mailto`                                |
+| URL       | `parse_url`, `build_url`, `redact_url`                                           |
 | Meta      | `version`                                                                        |
 
 The template, address, and compliance helpers take no connection and are

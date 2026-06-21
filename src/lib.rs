@@ -353,6 +353,117 @@ fn pct_encode(s: &str) -> String {
     out
 }
 
+/// Parse an SMTP URI (`smtp://` or `smtps://`, optional `user:pass@`, optional
+/// `:port`) into `{ scheme, host, port, tls, username, password }`. The TLS mode
+/// (`smtps`→`tls`, else `starttls`) and default port (465/587) follow the scheme
+/// unless an explicit port is given.
+fn parse_smtp_url(url: &str) -> Result<Value> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s.to_lowercase(), r),
+        None => ("smtp".to_string(), url),
+    };
+    let tls = if scheme == "smtps" { "tls" } else { "starttls" };
+    let default_port: u16 = if scheme == "smtps" { 465 } else { 587 };
+    // strip any path/query — only the authority matters for SMTP
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    let (userinfo, hostport) = match authority.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, authority),
+    };
+    let (username, password) = match userinfo {
+        Some(ui) => match ui.split_once(':') {
+            Some((u, p)) => (Some(url_component_decode(u)), Some(url_component_decode(p))),
+            None => (Some(url_component_decode(ui)), None),
+        },
+        None => (None, None),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().ok().unwrap_or(default_port)),
+        None => (hostport.to_string(), default_port),
+    };
+    if host.is_empty() {
+        return Err(anyhow!("missing host in url"));
+    }
+    Ok(json!({
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "tls": tls,
+        "username": username,
+        "password": password,
+    }))
+}
+
+/// Decode `%XX` escapes in a URL userinfo component (inverse of `pct_encode`).
+fn url_component_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let hex = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    };
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Build an SMTP URI from components: `scheme` (default by `tls`), `host`
+/// (required), optional `port`/`username`/`password`. Userinfo is percent-encoded.
+fn build_smtp_url(v: &Value) -> Result<String> {
+    let host = v
+        .get("host")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow!("missing host"))?;
+    let tls = v.get("tls").and_then(|x| x.as_str()).unwrap_or("starttls");
+    let scheme = v
+        .get("scheme")
+        .and_then(|x| x.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| if tls == "tls" { "smtps" } else { "smtp" }.to_string());
+    let mut out = format!("{scheme}://");
+    if let Some(user) = v.get("username").and_then(|x| x.as_str()) {
+        out.push_str(&pct_encode(user));
+        if let Some(pass) = v.get("password").and_then(|x| x.as_str()) {
+            out.push(':');
+            out.push_str(&pct_encode(pass));
+        }
+        out.push('@');
+    }
+    out.push_str(host);
+    if let Some(port) = v.get("port").and_then(|x| x.as_u64()) {
+        out.push_str(&format!(":{port}"));
+    }
+    Ok(out)
+}
+
+/// Replace the password in an SMTP URI with `***` for safe logging.
+fn redact_smtp_url(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => match rest.split_once('@') {
+            Some((userinfo, host)) => {
+                let user = userinfo.split_once(':').map(|(u, _)| u).unwrap_or(userinfo);
+                format!("{scheme}://{user}:***@{host}")
+            }
+            None => url.to_string(),
+        },
+        None => url.to_string(),
+    }
+}
+
 // ── message building ────────────────────────────────────────────────────────
 
 fn mailboxes(v: &Value, key: &str) -> Result<Vec<Mailbox>> {
@@ -838,6 +949,41 @@ pub extern "C" fn email__mailto(args: *const c_char) -> *const c_char {
     })
 }
 
+/// Parse an SMTP URI into `{ scheme, host, port, tls, username, password }`.
+#[no_mangle]
+pub extern "C" fn email__parse_url(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let url = v
+            .get("url")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing url"))?;
+        Ok(json!({ "parts": parse_smtp_url(url)? }))
+    })
+}
+
+/// Build an SMTP URI from a components map (inverse of parse_url).
+#[no_mangle]
+pub extern "C" fn email__build_url(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let parts = v
+            .get("parts")
+            .ok_or_else(|| anyhow!("missing parts object"))?;
+        Ok(json!({ "value": build_smtp_url(parts)? }))
+    })
+}
+
+/// Replace the password in an SMTP URI with `***` for safe logging.
+#[no_mangle]
+pub extern "C" fn email__redact_url(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let url = v
+            .get("url")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("missing url"))?;
+        Ok(json!({ "value": redact_smtp_url(url) }))
+    })
+}
+
 // ── unit tests (pure logic) ─────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -976,5 +1122,48 @@ mod tests {
         let formatted = String::from_utf8(msg.formatted()).unwrap();
         assert!(formatted.contains("List-Unsubscribe"));
         assert!(formatted.contains("multipart/alternative"));
+    }
+
+    #[test]
+    fn parse_smtp_url_scheme_defaults() {
+        let v = parse_smtp_url("smtp://user:pw@mail.example.com").unwrap();
+        assert_eq!(v["host"], json!("mail.example.com"));
+        assert_eq!(v["port"], json!(587));
+        assert_eq!(v["tls"], json!("starttls"));
+        assert_eq!(v["username"], json!("user"));
+        assert_eq!(v["password"], json!("pw"));
+
+        let s = parse_smtp_url("smtps://mail.example.com:2465").unwrap();
+        assert_eq!(s["tls"], json!("tls"));
+        assert_eq!(s["port"], json!(2465));
+        assert_eq!(s["username"], Value::Null);
+    }
+
+    #[test]
+    fn parse_smtp_url_decodes_userinfo() {
+        let v = parse_smtp_url("smtp://me%40corp:p%40ss@host").unwrap();
+        assert_eq!(v["username"], json!("me@corp"));
+        assert_eq!(v["password"], json!("p@ss"));
+    }
+
+    #[test]
+    fn build_smtp_url_roundtrips() {
+        let parts =
+            json!({"host": "h", "port": 587, "username": "u", "password": "p", "tls": "starttls"});
+        assert_eq!(build_smtp_url(&parts).unwrap(), "smtp://u:p@h:587");
+        let tls = json!({"host": "h", "tls": "tls"});
+        assert_eq!(build_smtp_url(&tls).unwrap(), "smtps://h");
+        // userinfo gets percent-encoded
+        let enc = json!({"host": "h", "username": "a@b"});
+        assert_eq!(build_smtp_url(&enc).unwrap(), "smtp://a%40b@h");
+    }
+
+    #[test]
+    fn redact_smtp_url_masks_password() {
+        assert_eq!(
+            redact_smtp_url("smtps://user:secret@mail:465"),
+            "smtps://user:***@mail:465"
+        );
+        assert_eq!(redact_smtp_url("smtp://mail:587"), "smtp://mail:587");
     }
 }
