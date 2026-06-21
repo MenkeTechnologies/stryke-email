@@ -932,7 +932,10 @@ mod tests {
         let v = split_address_list(r#"Ada <a@x.com>, "Lovelace, Jr" <b@x.com>; c@x.com"#);
         assert_eq!(v.len(), 3);
         assert_eq!(v[0], (Some("Ada".to_string()), "a@x.com".to_string()));
-        assert_eq!(v[1], (Some("Lovelace, Jr".to_string()), "b@x.com".to_string()));
+        assert_eq!(
+            v[1],
+            (Some("Lovelace, Jr".to_string()), "b@x.com".to_string())
+        );
         assert_eq!(v[2], (None, "c@x.com".to_string()));
     }
 
@@ -945,7 +948,10 @@ mod tests {
         );
         assert_eq!(format_address(None, "a@x.com"), "a@x.com");
         // round-trips through split_address for the simple case
-        assert_eq!(split_address(&format_address(Some("Ada"), "a@x.com")).1, "a@x.com");
+        assert_eq!(
+            split_address(&format_address(Some("Ada"), "a@x.com")).1,
+            "a@x.com"
+        );
     }
 
     #[test]
