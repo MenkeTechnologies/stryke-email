@@ -23,6 +23,8 @@ no tokio). Opt-in package tier.
 
 ### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-mongo`](https://github.com/MenkeTechnologies/stryke-mongo) · [`stryke-redis`](https://github.com/MenkeTechnologies/stryke-redis)
 
+### [`Read the Docs`](https://menketechnologies.github.io/stryke-email/) &middot; [`Engineering Report`](https://menketechnologies.github.io/stryke-email/report.html)
+
 ---
 
 ## Table of Contents
